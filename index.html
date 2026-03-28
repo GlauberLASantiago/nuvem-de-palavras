@@ -4,11 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nuvem de palavras - Sincronizado Supabase</title>
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Supabase JS -->
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <!-- Bibliotecas D3.js e D3-Cloud -->
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdn.jsdelivr.net/gh/jasondavies/d3-cloud/build/d3.layout.cloud.js"></script>
     <style>
@@ -62,9 +59,9 @@
             color: #94a3b8;
         }
 
-        .config-box { @apply flex flex-col gap-1; }
-        .config-label { @apply text-[10px] uppercase font-bold text-slate-400 text-left px-1; }
-        .room-badge { @apply px-3 py-1 rounded-lg bg-white/80 border border-slate-100 shadow-sm flex items-center gap-1 font-bold text-slate-700; }
+        .config-box { display: flex; flex-direction: column; gap: 0.25rem; }
+        .config-label { font-size: 10px; text-transform: uppercase; font-weight: 700; color: #94a3b8; text-align: left; padding: 0 0.25rem; }
+        .room-badge { padding: 0.25rem 0.75rem; border-radius: 0.5rem; background: rgba(255,255,255,0.8); border: 1px solid #f1f5f9; box-shadow: 0 1px 2px rgba(0,0,0,0.05); display: flex; align-items: center; gap: 0.25rem; font-weight: 700; color: #334155; }
 
         #modal-overlay {
             position: fixed;
@@ -75,7 +72,13 @@
             align-items: center;
             z-index: 100;
         }
-        .instruction-section { @apply text-left p-4 rounded-2xl border mb-4 last:mb-0; }
+        .instruction-section { text-align: left; padding: 1rem; border-radius: 1rem; border-width: 1px; border-style: solid; margin-bottom: 1rem; }
+        .instruction-section:last-child { margin-bottom: 0; }
+
+        /* FIX 3: classe para opacidade reduzida quando ciclo expirou */
+        .cycle-expired .word-tag {
+            opacity: 0.35 !important;
+        }
     </style>
 </head>
 <body class="min-h-screen flex flex-col items-center p-4">
@@ -218,12 +221,33 @@
         let userWordsSent = 0;
         let realtimeChannel = null;
 
+        // FIX 2: offset do relógio do servidor para sincronizar o cronômetro
+        let serverTimeOffset = 0;
+
         const colorSchemes = [
             ['#3b82f6', '#0ea5e9', '#6366f1', '#8b5cf6'], 
             ['#f59e0b', '#fbbf24', '#f97316', '#fb7185'], 
             ['#10b981', '#34d399', '#84cc16', '#a855f7'], 
             ['#ec4899', '#f43f5e', '#d946ef', '#f97316'],
         ];
+
+        // FIX 2: calcula offset entre hora local e hora do servidor Supabase
+        async function syncServerTime() {
+            const localBefore = Date.now();
+            const { data, error } = await supabaseClient.rpc('get_server_time').maybeSingle();
+            const localAfter = Date.now();
+            if (data && data.now) {
+                const serverMs = new Date(data.now).getTime();
+                const roundTrip = localAfter - localBefore;
+                const localAtRequest = localBefore + Math.round(roundTrip / 2);
+                serverTimeOffset = serverMs - localAtRequest;
+            }
+            // Se a RPC não existir no projeto, offset fica 0 (funciona sem a função SQL)
+        }
+
+        function serverNow() {
+            return Date.now() + serverTimeOffset;
+        }
 
         // --- MODAIS ---
         function openHTMLModal() {
@@ -260,7 +284,7 @@
             document.getElementById('display-room-id').innerText = nameVal;
             userWordsSent = parseInt(localStorage.getItem(`sent_${currentRoom}`)) || 0;
 
-            // Fetch Initial Data
+            await syncServerTime(); // FIX 2: sincroniza relógio antes de entrar
             await fetchInitialWords();
             setupRealtime();
 
@@ -290,8 +314,16 @@
             realtimeChannel = supabaseClient
                 .channel(`room_${currentRoom}`)
                 .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'palavras', filter: `room=eq.${currentRoom}` }, payload => {
+                    const prevCycle = currentCycle;
                     wordsData.push(payload.new);
                     calculateCycles();
+
+                    // FIX 4: se o ciclo avançou via INSERT de outro usuário, re-renderiza a nuvem
+                    // limpando automaticamente para todos os espectadores
+                    if (currentCycle !== prevCycle) {
+                        showToast(`🔄 Novo ciclo #${currentCycle} iniciado!`);
+                    }
+
                     renderCloud();
                     updateUI();
                 })
@@ -322,17 +354,22 @@
         async function handleSubmission() {
             const wordInput = document.getElementById('word-input');
             const nickInput = document.getElementById('nickname-input');
-            const wordValue = wordInput.value.trim().toUpperCase();
             const nickValue = nickInput.value.trim();
 
+            // FIX 1: validação corrigida — ordem certa e verificação de espaços internos
+            const rawWord = wordInput.value.trim();
             if (!nickValue) { showToast("Digite seu apelido."); return; }
-            if (wordValue.includes(' ') || !wordValue) { showToast("Palavra inválida."); return; }
+            if (!rawWord) { showToast("Digite uma palavra."); return; }
+            if (/\s/.test(rawWord)) { showToast("A palavra não pode conter espaços."); return; }
+            if (rawWord.length > 25) { showToast("Palavra muito longa (máx. 25 caracteres)."); return; }
             if (userWordsSent >= MAX_WORDS_USER) { showToast("Limite atingido."); return; }
+
+            const wordValue = rawWord.toUpperCase();
 
             const newEntry = {
                 texto: wordValue,
                 nickname: nickValue,
-                timestamp: Date.now(),
+                timestamp: serverNow(), // FIX 2: usa tempo do servidor para consistência
                 room: currentRoom
             };
 
@@ -342,6 +379,7 @@
                 userWordsSent++;
                 localStorage.setItem(`sent_${currentRoom}`, userWordsSent);
                 wordInput.value = '';
+                updateUI();
             } else {
                 showToast("Erro ao enviar para o banco de dados.");
             }
@@ -350,6 +388,11 @@
         function getActiveWords() {
             if (!cycleStartTime) return [];
             return wordsData.filter(w => w.timestamp >= cycleStartTime && w.timestamp < cycleStartTime + DURATION_LIMIT);
+        }
+
+        function isCycleExpired() {
+            if (!cycleStartTime) return false;
+            return serverNow() >= cycleStartTime + DURATION_LIMIT;
         }
 
         function leaveRoom() {
@@ -376,6 +419,16 @@
             listEl.innerText = uniqueNicks.length > 0 ? uniqueNicks.join(', ') : "Ninguém enviou ainda.";
         }
 
+        // FIX 3: controla a opacidade via classe CSS no container, de forma confiável
+        function updateExpiredState() {
+            const container = document.getElementById('word-cloud-container');
+            if (isCycleExpired() && cycleStartTime) {
+                container.classList.add('cycle-expired');
+            } else {
+                container.classList.remove('cycle-expired');
+            }
+        }
+
         function renderCloud() {
             const active = getActiveWords();
             const container = document.getElementById('word-cloud-container');
@@ -383,10 +436,13 @@
             if (active.length === 0 && lastRenderedWords.length === 0) {
                 document.getElementById('empty-state').style.display = 'block';
                 d3.select("#word-cloud-container svg").remove();
+                updateExpiredState(); // FIX 3
                 return;
             }
             document.getElementById('empty-state').style.display = 'none';
 
+            // FIX 4: se há palavras ativas, mostra-as; caso contrário mantém as do ciclo anterior
+            // (o ciclo anterior já ficará com opacidade reduzida via classe CSS)
             const displayData = active.length > 0 ? active : lastRenderedWords;
             const counts = {};
             displayData.forEach(w => counts[w.texto] = (counts[w.texto] || 0) + 1);
@@ -406,6 +462,7 @@
                 .on("end", words => {
                     if (active.length > 0) lastRenderedWords = active;
                     draw(words, w, h);
+                    updateExpiredState(); // FIX 3: aplica estado de expiração logo após o render
                 })
                 .start();
         }
@@ -460,10 +517,14 @@
                 const mins = DURATION_LIMIT / 60000;
                 txt.innerText = `${mins.toString().padStart(2, '0')}:00`; return;
             }
-            const remaining = Math.max(0, DURATION_LIMIT - (Date.now() - cycleStartTime));
+            // FIX 2: usa serverNow() para calcular o tempo restante de forma sincronizada
+            const remaining = Math.max(0, DURATION_LIMIT - (serverNow() - cycleStartTime));
             const m = Math.floor(remaining / 60000), s = Math.floor((remaining % 60000) / 1000);
             txt.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
             dot.className = `w-2.5 h-2.5 rounded-full animate-pulse ${remaining <= 15000 ? 'bg-red-500' : 'bg-green-500'}`;
+
+            // FIX 3: atualiza estado de expiração a cada tick do timer
+            updateExpiredState();
         }
 
         function showToast(m) {
@@ -473,7 +534,20 @@
             setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 500); }, 3000);
         }
 
-        window.onload = () => { initParticles(); animate(); setInterval(() => { if(currentRoom) { updateTimer(); if(Date.now() > cycleStartTime + DURATION_LIMIT) d3.selectAll(".word-tag").style("opacity", 0.35); } }, 1000); };
+        window.onload = () => {
+            initParticles();
+            animate();
+            setInterval(() => {
+                if (currentRoom) {
+                    updateTimer();
+                    // FIX 4: verifica periodicamente se um novo ciclo começou
+                    // (para o caso de um INSERT ter chegado enquanto o usuário estava offline)
+                    if (isCycleExpired()) {
+                        updateExpiredState();
+                    }
+                }
+            }, 1000);
+        };
         window.onresize = initParticles;
     </script>
 </body>
