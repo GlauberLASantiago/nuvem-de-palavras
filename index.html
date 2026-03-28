@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nuvem de palavras - Sincronizado Supabase</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Supabase JS -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Bibliotecas D3.js e D3-Cloud -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/jasondavies/d3-cloud/build/d3.layout.cloud.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+        
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            margin: 0;
+            overflow-x: hidden;
+            background: #f0f9ff;
+        }
+
+        #particle-canvas {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: -1;
+        }
+
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.07);
+        }
+
+        .word-tag {
+            transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            filter: drop-shadow(0 2px 2px rgba(0,0,0,0.1));
+            cursor: default;
+        }
+
+        input {
+            background: rgba(255, 255, 255, 0.8) !important;
+            color: #1e293b !important;
+            border: 2px solid #e2e8f0 !important;
+            transition: all 0.2s;
+        }
+        
+        input:focus { border-color: #3b82f6 !important; outline: none; }
+
+        .hidden-view { display: none !important; }
+        
+        footer {
+            position: relative;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+            width: 100%;
+            text-align: center;
+            font-size: 0.75rem;
+            color: #94a3b8;
+        }
+
+        .config-box { @apply flex flex-col gap-1; }
+        .config-label { @apply text-[10px] uppercase font-bold text-slate-400 text-left px-1; }
+        .room-badge { @apply px-3 py-1 rounded-lg bg-white/80 border border-slate-100 shadow-sm flex items-center gap-1 font-bold text-slate-700; }
+
+        #modal-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+        .instruction-section { @apply text-left p-4 rounded-2xl border mb-4 last:mb-0; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center p-4">
+
+    <canvas id="particle-canvas"></canvas>
+
+    <!-- MODAL DE CÓDIGOS -->
+    <div id="modal-overlay" onclick="closeModal()">
+        <div class="glass-panel p-6 rounded-3xl max-w-2xl w-full m-4 shadow-2xl" onclick="event.stopPropagation()">
+            <h2 id="modal-title" class="text-xl font-bold mb-4 text-slate-800">Código</h2>
+            <p id="modal-desc" class="text-sm text-slate-500 mb-4">Copie o código abaixo:</p>
+            <textarea id="modal-text" readonly class="w-full h-64 p-3 text-xs font-mono bg-white/50 border border-slate-200 rounded-xl mb-4"></textarea>
+            <div class="flex justify-end gap-2">
+                <button onclick="copyModalText()" class="bg-blue-500 text-white px-4 py-2 rounded-xl text-sm font-bold">Copiar Código</button>
+                <button onclick="closeModal()" class="bg-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm font-bold">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TELA 1: CONFIGURAÇÃO -->
+    <div id="room-selection-view" class="max-w-3xl w-full z-10 text-center my-6">
+        <div class="glass-panel p-8 rounded-[2.5rem] shadow-2xl mb-6">
+            <h1 class="text-3xl font-extrabold text-slate-800 mb-2 text-blue-600 uppercase tracking-tight">Nuvem de palavras</h1>
+            <p class="text-slate-500 mb-8 font-medium">Painel de Configuração da Sala</p>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                <div class="instruction-section bg-blue-50/50 border-blue-100">
+                    <h3 class="text-blue-700 font-bold text-sm mb-3 uppercase tracking-wider flex items-center gap-2"><span>🛠️</span> Uso</h3>
+                    <ul class="text-[11px] text-blue-600 space-y-2 font-medium">
+                        <li>• Defina o limite de palavras e o tempo.</li>
+                        <li>• O Identificador deve ter pelo menos 3 caracteres (ex: GLA).</li>
+                        <li>• Conectado ao Supabase: os dados são compartilhados em tempo real.</li>
+                    </ul>
+                </div>
+                <div class="instruction-section bg-green-50/50 border-green-100">
+                    <h3 class="text-green-700 font-bold text-sm mb-3 uppercase tracking-wider flex items-center gap-2"><span>🎓</span> Pedagógico</h3>
+                    <ul class="text-[11px] text-green-600 space-y-2 font-medium">
+                        <li>• Brainstorming colaborativo em tempo real.</li>
+                        <li>• Avalie o consenso da turma pelo tamanho das palavras.</li>
+                        <li>• Use ciclos rápidos para manter o engajamento elevado.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap md:flex-nowrap gap-3 mb-8">
+                <div class="config-box w-full md:w-24">
+                    <span class="config-label">Palavras</span>
+                    <input type="number" id="config-max-words" min="1" max="9" value="3" class="w-full p-4 text-center text-xl font-bold rounded-2xl shadow-sm">
+                </div>
+                <div class="config-box w-full md:w-24">
+                    <span class="config-label">Minutos</span>
+                    <input type="number" id="config-duration" min="1" max="9" value="3" class="w-full p-4 text-center text-xl font-bold rounded-2xl shadow-sm">
+                </div>
+                <div class="config-box flex-grow">
+                    <span class="config-label">Identificador da Sala</span>
+                    <input type="text" id="config-room-name" placeholder="Ex: GLA" class="w-full p-4 text-center text-xl font-bold rounded-2xl uppercase tracking-widest shadow-sm">
+                </div>
+            </div>
+            
+            <button onclick="joinRoom()" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-5 rounded-3xl transition-all shadow-lg text-lg mb-8">
+                Iniciar Nuvem em Tempo Real
+            </button>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <button onclick="openHTMLModal()" class="bg-white/80 border border-slate-200 text-slate-600 font-bold py-3 rounded-2xl text-xs hover:bg-white shadow-sm">📄 Código HTML</button>
+                <button onclick="openEmbedModal()" class="bg-white/80 border border-slate-200 text-slate-600 font-bold py-3 rounded-2xl text-xs hover:bg-white shadow-sm">🔗 Código de Incorporação</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TELA 2: NUVEM -->
+    <div id="app-view" class="max-w-4xl w-full z-10 hidden-view my-auto">
+        <header class="text-center mb-6 relative">
+            <button onclick="leaveRoom()" class="absolute left-0 top-0 text-slate-400 hover:text-blue-500 font-bold bg-white/50 px-4 py-2 rounded-full shadow-sm text-sm">← Voltar</button>
+            
+            <div class="flex flex-col items-center gap-2 mb-4">
+                <div class="flex items-center gap-2 text-slate-800">
+                    <div class="flex items-center gap-1">
+                        <div class="room-badge">📝 <span id="display-room-words">3</span></div>
+                        <div class="room-badge">⏱️ <span id="display-room-time">3</span>m</div>
+                        <div class="room-badge bg-blue-500 !text-white border-none px-4" id="display-room-id">GLA</div>
+                        <div class="room-badge bg-green-100 text-green-700 border-green-200">👥 <span id="active-users-count">0</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-center gap-4 items-center">
+                <span id="cycle-display" class="px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-widest text-blue-600 bg-blue-100 border border-blue-200">Ciclo Ativo: #1</span>
+                <div class="bg-white px-4 py-1.5 rounded-xl font-bold text-lg flex items-center gap-2 shadow-sm border border-slate-100">
+                    <span id="timer-dot" class="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse"></span>
+                    <span id="timer-text">00:00</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="relative">
+            <div id="word-cloud-container" class="glass-panel rounded-[2.5rem] flex items-center justify-center mb-2 h-[450px] overflow-hidden">
+                <div id="empty-state" class="text-slate-400 text-center p-8">
+                    <h1 class="text-5xl md:text-7xl font-extrabold text-slate-200 mb-4 opacity-50 uppercase select-none">Nuvem de palavras</h1>
+                    <p class="text-xl font-semibold italic">Aguardando envios do Supabase...</p>
+                </div>
+            </div>
+            <div class="px-6 mb-6">
+                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-tighter mb-1">Participantes:</p>
+                <p id="participant-list" class="text-[11px] text-slate-500 italic leading-tight">Ninguém enviou ainda.</p>
+            </div>
+        </div>
+
+        <div class="glass-panel p-6 rounded-[2rem]">
+            <div class="flex flex-col gap-4">
+                <div class="flex flex-col md:flex-row gap-3">
+                    <input type="text" id="nickname-input" placeholder="Seu apelido" class="md:w-1/3 p-4 rounded-2xl border-slate-200 shadow-inner">
+                    <input type="text" id="word-input" placeholder="Escreva uma palavra significativa" class="flex-grow p-4 text-lg rounded-2xl shadow-inner font-bold" maxlength="25">
+                </div>
+                <button id="send-btn" onclick="handleSubmission()" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 disabled:opacity-30">Enviar para a Nuvem</button>
+            </div>
+            <div class="mt-4 flex justify-between items-center text-[10px] uppercase font-bold text-slate-500">
+                <span id="user-count-display">Sua participação: 0 / 3</span>
+            </div>
+        </div>
+    </div>
+
+    <footer>Elaborado por prof. Glauber Santiago - DAC/UFSCar.</footer>
+
+    <script>
+        // --- SUPABASE CONFIG ---
+        const SUPABASE_URL = "https://ddmvjsermynfowvfgbpn.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_I9tU-FJcaj63h-1QnSL1vQ_rH3CZcvC";
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // --- ESTADO ---
+        let currentRoom = null;
+        let DURATION_LIMIT = 3 * 60 * 1000; 
+        let MAX_WORDS_USER = 3;
+        
+        let wordsData = []; 
+        let currentCycle = 1;
+        let cycleStartTime = null;
+        let lastRenderedWords = [];
+        let userWordsSent = 0;
+        let realtimeChannel = null;
+
+        const colorSchemes = [
+            ['#3b82f6', '#0ea5e9', '#6366f1', '#8b5cf6'], 
+            ['#f59e0b', '#fbbf24', '#f97316', '#fb7185'], 
+            ['#10b981', '#34d399', '#84cc16', '#a855f7'], 
+            ['#ec4899', '#f43f5e', '#d946ef', '#f97316'],
+        ];
+
+        // --- MODAIS ---
+        function openHTMLModal() {
+            document.getElementById('modal-title').innerText = "Código HTML";
+            document.getElementById('modal-text').value = document.documentElement.outerHTML;
+            document.getElementById('modal-overlay').style.display = 'flex';
+        }
+        function openEmbedModal() {
+            const embed = `<iframe src="${window.location.href}" width="100%" height="800px" frameborder="0" style="border-radius:2.5rem; border:1px solid #e2e8f0;"></iframe>`;
+            document.getElementById('modal-title').innerText = "Incorporação";
+            document.getElementById('modal-text').value = embed;
+            document.getElementById('modal-overlay').style.display = 'flex';
+        }
+        function closeModal() { document.getElementById('modal-overlay').style.display = 'none'; }
+        function copyModalText() {
+            const t = document.getElementById("modal-text"); t.select();
+            document.execCommand("copy"); showToast("Copiado!");
+        }
+
+        // --- CORE LOGIC ---
+        async function joinRoom() {
+            const wordsVal = parseInt(document.getElementById('config-max-words').value);
+            const durationVal = parseInt(document.getElementById('config-duration').value);
+            const nameVal = document.getElementById('config-room-name').value.trim().toUpperCase();
+
+            if (!nameVal || nameVal.length < 3) { showToast("Identificador inválido (mín. 3 letras)."); return; }
+
+            MAX_WORDS_USER = wordsVal;
+            DURATION_LIMIT = durationVal * 60 * 1000;
+            currentRoom = `${wordsVal}${durationVal}${nameVal}`;
+            
+            document.getElementById('display-room-words').innerText = wordsVal;
+            document.getElementById('display-room-time').innerText = durationVal;
+            document.getElementById('display-room-id').innerText = nameVal;
+            userWordsSent = parseInt(localStorage.getItem(`sent_${currentRoom}`)) || 0;
+
+            // Fetch Initial Data
+            await fetchInitialWords();
+            setupRealtime();
+
+            document.getElementById('room-selection-view').classList.add('hidden-view');
+            document.getElementById('app-view').classList.remove('hidden-view');
+            updateUI();
+            renderCloud();
+            showToast(`Sala ${currentRoom} sincronizada.`);
+        }
+
+        async function fetchInitialWords() {
+            const { data, error } = await supabaseClient
+                .from('palavras')
+                .select('*')
+                .eq('room', currentRoom)
+                .order('timestamp', { ascending: true });
+
+            if (data) {
+                wordsData = data;
+                calculateCycles();
+            }
+        }
+
+        function setupRealtime() {
+            if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
+            
+            realtimeChannel = supabaseClient
+                .channel(`room_${currentRoom}`)
+                .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'palavras', filter: `room=eq.${currentRoom}` }, payload => {
+                    wordsData.push(payload.new);
+                    calculateCycles();
+                    renderCloud();
+                    updateUI();
+                })
+                .subscribe();
+        }
+
+        function calculateCycles() {
+            if (wordsData.length === 0) {
+                cycleStartTime = null;
+                currentCycle = 1;
+                return;
+            }
+
+            let cycleNum = 1;
+            let currentCycleStart = wordsData[0].timestamp;
+
+            for (let i = 1; i < wordsData.length; i++) {
+                if (wordsData[i].timestamp > currentCycleStart + DURATION_LIMIT) {
+                    cycleNum++;
+                    currentCycleStart = wordsData[i].timestamp;
+                }
+            }
+            
+            currentCycle = cycleNum;
+            cycleStartTime = currentCycleStart;
+        }
+
+        async function handleSubmission() {
+            const wordInput = document.getElementById('word-input');
+            const nickInput = document.getElementById('nickname-input');
+            const wordValue = wordInput.value.trim().toUpperCase();
+            const nickValue = nickInput.value.trim();
+
+            if (!nickValue) { showToast("Digite seu apelido."); return; }
+            if (wordValue.includes(' ') || !wordValue) { showToast("Palavra inválida."); return; }
+            if (userWordsSent >= MAX_WORDS_USER) { showToast("Limite atingido."); return; }
+
+            const newEntry = {
+                texto: wordValue,
+                nickname: nickValue,
+                timestamp: Date.now(),
+                room: currentRoom
+            };
+
+            const { error } = await supabaseClient.from('palavras').insert([newEntry]);
+            
+            if (!error) {
+                userWordsSent++;
+                localStorage.setItem(`sent_${currentRoom}`, userWordsSent);
+                wordInput.value = '';
+            } else {
+                showToast("Erro ao enviar para o banco de dados.");
+            }
+        }
+
+        function getActiveWords() {
+            if (!cycleStartTime) return [];
+            return wordsData.filter(w => w.timestamp >= cycleStartTime && w.timestamp < cycleStartTime + DURATION_LIMIT);
+        }
+
+        function leaveRoom() {
+            if (realtimeChannel) supabaseClient.removeChannel(realtimeChannel);
+            currentRoom = null;
+            document.getElementById('room-selection-view').classList.remove('hidden-view');
+            document.getElementById('app-view').classList.add('hidden-view');
+        }
+
+        // --- UI & RENDER ---
+        function updateUI() {
+            document.getElementById('user-count-display').innerText = `Sua participação: ${userWordsSent} / ${MAX_WORDS_USER}`;
+            document.getElementById('cycle-display').innerText = `Ciclo Ativo: #${currentCycle}`;
+            
+            const btn = document.getElementById('send-btn');
+            btn.disabled = userWordsSent >= MAX_WORDS_USER;
+            btn.innerText = userWordsSent >= MAX_WORDS_USER ? "Limite atingido" : "Enviar para a Nuvem";
+
+            const active = getActiveWords();
+            const uniqueNicks = [...new Set(active.map(w => w.nickname))];
+            document.getElementById('active-users-count').innerText = uniqueNicks.length;
+            
+            const listEl = document.getElementById('participant-list');
+            listEl.innerText = uniqueNicks.length > 0 ? uniqueNicks.join(', ') : "Ninguém enviou ainda.";
+        }
+
+        function renderCloud() {
+            const active = getActiveWords();
+            const container = document.getElementById('word-cloud-container');
+            
+            if (active.length === 0 && lastRenderedWords.length === 0) {
+                document.getElementById('empty-state').style.display = 'block';
+                d3.select("#word-cloud-container svg").remove();
+                return;
+            }
+            document.getElementById('empty-state').style.display = 'none';
+
+            const displayData = active.length > 0 ? active : lastRenderedWords;
+            const counts = {};
+            displayData.forEach(w => counts[w.texto] = (counts[w.texto] || 0) + 1);
+
+            const data = Object.keys(counts).map(text => ({ text, size: 30 + (counts[text] * 20) }));
+            const w = container.offsetWidth, h = container.offsetHeight;
+
+            d3.select("#word-cloud-container svg").remove();
+            d3.layout.cloud()
+                .size([w, h])
+                .words(data)
+                .padding(10)
+                .rotate(() => (Math.random() > 0.6 ? 90 : 0))
+                .font("Plus Jakarta Sans")
+                .fontSize(d => d.size)
+                .spiral(currentCycle % 2 === 0 ? "archimedean" : "rectangular")
+                .on("end", words => {
+                    if (active.length > 0) lastRenderedWords = active;
+                    draw(words, w, h);
+                })
+                .start();
+        }
+
+        function draw(words, w, h) {
+            const palette = colorSchemes[(currentCycle - 1) % colorSchemes.length];
+            d3.select("#word-cloud-container").append("svg")
+                .attr("width", w).attr("height", h)
+                .append("g").attr("transform", `translate(${w/2},${h/2})`)
+                .selectAll("text").data(words).enter().append("text")
+                .style("font-size", d => `${d.size}px`).style("font-weight", "800")
+                .style("fill", (d, i) => palette[i % palette.length])
+                .attr("text-anchor", "middle")
+                .attr("transform", d => `translate(${[d.x, d.y]})rotate(${d.rotate})`)
+                .text(d => d.text).attr("class", "word-tag")
+                .style("opacity", 0).transition().duration(800).style("opacity", 1);
+        }
+
+        // --- BACKGROUND & TIMERS ---
+        const canvas = document.getElementById('particle-canvas');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+        const bubbleColors = ['#bfdbfe', '#bbf7d0', '#fef3c7', '#fbcfe8', '#ddd6fe'];
+
+        function initParticles() {
+            canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+            particles = Array.from({length: 20}, () => ({
+                x: Math.random() * canvas.width, y: Math.random() * canvas.height,
+                size: Math.random() * 120 + 60,
+                speedX: (Math.random() - 0.5) * 0.2, speedY: (Math.random() - 0.5) * 0.2,
+                color: bubbleColors[Math.floor(Math.random() * bubbleColors.length)],
+                opacity: Math.random() * 0.2 + 0.1
+            }));
+        }
+
+        function animate() {
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+            particles.forEach(p => {
+                p.x += p.speedX; p.y += p.speedY;
+                if(p.x < -p.size) p.x = canvas.width + p.size;
+                if(p.y < -p.size) p.y = canvas.height + p.size;
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+                ctx.fillStyle = p.color; ctx.globalAlpha = p.opacity; ctx.fill();
+            });
+            ctx.globalAlpha = 1; requestAnimationFrame(animate);
+        }
+
+        function updateTimer() {
+            const txt = document.getElementById('timer-text');
+            const dot = document.getElementById('timer-dot');
+            if (!cycleStartTime || !currentRoom) {
+                const mins = DURATION_LIMIT / 60000;
+                txt.innerText = `${mins.toString().padStart(2, '0')}:00`; return;
+            }
+            const remaining = Math.max(0, DURATION_LIMIT - (Date.now() - cycleStartTime));
+            const m = Math.floor(remaining / 60000), s = Math.floor((remaining % 60000) / 1000);
+            txt.innerText = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+            dot.className = `w-2.5 h-2.5 rounded-full animate-pulse ${remaining <= 15000 ? 'bg-red-500' : 'bg-green-500'}`;
+        }
+
+        function showToast(m) {
+            const t = document.createElement('div');
+            t.className = "fixed bottom-12 left-1/2 -translate-x-1/2 bg-white text-slate-800 px-8 py-4 rounded-2xl shadow-xl z-[200] font-bold border border-slate-100 text-center";
+            t.innerText = m; document.body.appendChild(t);
+            setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 500); }, 3000);
+        }
+
+        window.onload = () => { initParticles(); animate(); setInterval(() => { if(currentRoom) { updateTimer(); if(Date.now() > cycleStartTime + DURATION_LIMIT) d3.selectAll(".word-tag").style("opacity", 0.35); } }, 1000); };
+        window.onresize = initParticles;
+    </script>
+</body>
+</html>
